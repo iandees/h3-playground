@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>H3 Cell Outlines</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw/dist/leaflet.draw.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-draw/dist/leaflet.draw.js"></script>
+    <script src="https://unpkg.com/h3-js"></script>
+    <style>
+        #map {
+            height: 100vh;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+<div id="map"></div>
+<!--<div style="position: absolute; top: 10px; left: 10px; z-index: 1000;">-->
+<!--    <input type="range" min="1" max="13" value="7" class="slider" id="resolutionSlider">-->
+<!--    <p>Resolution: <span id="resolutionValue"></span></p>-->
+<!--</div>-->
+<script>
+    // Initialize the map
+    const map = L.map('map').setView([37.7749, -122.4194], 13);
+
+    // List of layers with the H3 cells
+    let h3Layers = [];
+
+    // Set up the OSM layer
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+    }).addTo(map);
+
+    // Enable drawing of polygons
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+    const drawControl = new L.Control.Draw({
+        edit: {
+            featureGroup: drawnItems,
+        },
+        draw: {
+            polyline: false,
+            rectangle: false,
+            circle: {
+                shapeOptions: {
+                    color: 'blue'
+                }
+            },
+            marker: {
+                shapeOptions: {
+                    color: 'blue'
+                }
+            },
+            circlemarker: false,
+            polygon: {
+                shapeOptions: {
+                    color: 'blue'
+                }
+            }
+        }
+    });
+    map.addControl(drawControl);
+
+    // Event listener for when a shape is drawn
+    map.on(L.Draw.Event.CREATED, function(event) {
+        let layer = event.layer;
+
+        // Convert circles to polygons
+        if (layer instanceof L.Circle) {
+            const center = layer.getLatLng();
+            const radiusLat = layer.getRadius() / 111319;
+            const radiusLng = 1 / (111319 * Math.cos(center.lat * (Math.PI / 180))) * layer.getRadius();
+            const numberOfPoints = 32; // Increase for a smoother circle
+
+            let latLngs = [];
+            for (let i = 0; i < numberOfPoints; i++) {
+                const angle = (i / numberOfPoints) * 2 * Math.PI;
+                const lat = center.lat + radiusLat * Math.sin(angle);
+                const lng = center.lng + radiusLng * Math.cos(angle);
+                latLngs.push([lat, lng]);
+            }
+
+            layer = L.polygon([latLngs]);
+        }
+
+        // Set the color to use for the H3 cells using the color dropdown
+        layer.colorToUseForH3Cells = resolutionSliderControl.getNextShapeColor();
+
+        drawnItems.addLayer(layer);
+        redrawH3Tiles();
+    });
+
+    // Re-calculate H3 cells when a shape is deleted or edited
+    map.on(L.Draw.Event.DELETED, function(event) {
+        redrawH3Tiles();
+    });
+    map.on(L.Draw.Event.EDITED, function(event) {
+        redrawH3Tiles();
+    });
+
+    // Define a custom control for the resolution slider
+    L.Control.ResolutionSlider = L.Control.extend({
+        onAdd: function(map) {
+            // Create a div to hold the slider and label
+            let container = L.DomUtil.create('div', 'leaflet-control-resolution-slider');
+            container.style.zIndex = '1000';
+            container.style.background = 'white';
+            container.style.padding = '5px';
+
+            // Prevent map clicks when clicking the slider
+            L.DomEvent.disableClickPropagation(container);
+
+            // Add the slider input
+            let slider = L.DomUtil.create('input', 'slider', container);
+            slider.type = 'range';
+            slider.min = '1';
+            slider.max = '13';
+            slider.value = '7';
+            slider.id = 'resolutionSlider';
+            this._currentResolution = parseInt(slider.value);
+
+            slider.oninput = function() {
+                let resolution = parseInt(slider.value);
+                this._label.innerHTML = `Resolution: <span id="resolutionValue">${resolution}</span>`;
+                this._currentResolution = resolution;
+                if (this.options.onResolutionChange) {
+                    this.options.onResolutionChange.call(resolution);
+                }
+            }.bind(this);
+
+            // Add the resolution label
+            this._label = L.DomUtil.create('p', '', container);
+            this._label.innerHTML = `Resolution: <span id="resolutionValue">${this._currentResolution}</span>`;
+
+            // Checkbox for enabling/disabling H3 cell compaction
+            this._compress_checkbox = L.DomUtil.create('input', '', container);
+            this._compress_checkbox.type = 'checkbox';
+            this._compress_checkbox.checked = true; // Default to checked
+            this._compress_checkbox.id = 'compactCellsCheckbox';
+            let checkboxLabel = L.DomUtil.create('label', '', container);
+            checkboxLabel.setAttribute('for', 'compactCellsCheckbox');
+            checkboxLabel.innerHTML = ' Compact Cells';
+            this._compress_checkbox.onchange = function() {
+                if (this.options.onCompressChange) {
+                    this.options.onCompressChange.call(this);
+                }
+            }.bind(this);
+
+            // Checkbox to show or hide the original shapes
+            this._show_shapes_checkbox = L.DomUtil.create('input', '', container);
+            this._show_shapes_checkbox.type = 'checkbox';
+            this._show_shapes_checkbox.checked = true; // Default to checked
+            this._show_shapes_checkbox.id = 'showShapesCheckbox';
+            let showShapesLabel = L.DomUtil.create('label', '', container);
+            showShapesLabel.setAttribute('for', 'showShapesCheckbox');
+            showShapesLabel.innerHTML = ' Show Shapes';
+            this._show_shapes_checkbox.onchange = function() {
+                this.options.onShowShapesChange.call(this);
+            }.bind(this);
+
+            // Dropdown for selecting the color to use for the H3 cells
+            this._h3_color_dropdown = L.DomUtil.create('select', '', container);
+            this._h3_color_dropdown.id = 'h3ColorDropdown';
+            let colorOptions = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'black', 'white'];
+            colorOptions.forEach(color => {
+                let option = L.DomUtil.create('option', '', this._h3_color_dropdown);
+                option.value = color;
+                option.innerHTML = color;
+            });
+            let colorLabel = L.DomUtil.create('label', '', container);
+            colorLabel.setAttribute('for', 'h3ColorDropdown');
+            colorLabel.innerHTML = ' H3 Cell Color';
+
+            return container;
+        },
+
+        onRemove: function(map) {
+            // Nothing to do here
+        },
+
+        getCurrentResolution: function() {
+            return this._currentResolution;
+        },
+
+        isCompactionEnabled: function() {
+            return this._compress_checkbox.checked;
+        },
+
+        getNextShapeColor: function() {
+            return this._h3_color_dropdown.value;
+        },
+    });
+
+    let resolutionSliderControl = new L.Control.ResolutionSlider({
+        onResolutionChange: function(resolution) {
+            redrawH3Tiles();
+        },
+        onCompressChange: function(compress) {
+            redrawH3Tiles();
+        },
+        onShowShapesChange: function() {
+            // Remove the drawnItems layer group from the map if the checkbox is unchecked
+            if (!this._show_shapes_checkbox.checked) {
+                map.removeLayer(drawnItems);
+            } else {
+                map.addLayer(drawnItems);
+            }
+        },
+    });
+    map.addControl(resolutionSliderControl);
+
+    function redrawH3Tiles() {
+        // Remove the H3 cell layers from the map
+        h3Layers.forEach(layer => map.removeLayer(layer));
+        // Clear the h3Layers array
+        h3Layers = [];
+
+        // Redraw the H3 cells with the new resolution
+        drawnItems.eachLayer(function (layer) {
+            showH3Cells(layer, layer.colorToUseForH3Cells);
+        });
+    }
+
+    // Function to show H3 cells
+    function showH3Cells(layer, cellColor = 'red') {
+        let latLngs = [];
+
+        // Check if the layer is a circle and convert it to a polygon
+        if (layer instanceof L.Marker) {
+            latLngs = [[layer.getLatLng().lat, layer.getLatLng().lng]];
+        } else {
+            latLngs = layer.getLatLngs()[0].map(latLng => [latLng.lat, latLng.lng]);
+        }
+
+        // Get the H3 indexes for the geometry
+        let h3Indexes = [];
+        if (latLngs.length === 1) {
+            h3Indexes = [h3.latLngToCell(latLngs[0][0], latLngs[0][1], resolutionSliderControl.getCurrentResolution())];
+        } else {
+            h3Indexes = h3.polygonToCells(latLngs, resolutionSliderControl.getCurrentResolution());
+        }
+
+        // Compact the H3 indexes if the checkbox is checked
+        if (resolutionSliderControl.isCompactionEnabled()) {
+            h3Indexes = h3.compactCells(h3Indexes);
+        }
+
+        console.log(`Drawing ${h3Indexes.length} H3 cells`);
+
+        // Put the H3 cells on the map
+        h3Indexes.forEach(h3Index => {
+            const h3Polygon = h3.cellToBoundary(h3Index, false);
+            const h3Layer = L.polygon(h3Polygon, { color: cellColor });
+            h3Layer.on('click', function() {
+                L.popup()
+                    .setLatLng(h3Layer.getBounds().getCenter())
+                    .setContent(`H3 Index Hex: <code>${h3Index}</code><br/>Decimal: <code>${BigInt('0x' + h3Index).toString()}</code>`)
+                    .openOn(map);
+            });
+            h3Layers.push(h3Layer);
+            h3Layer.addTo(map);
+        });
+    }
+</script>
+</body>
+</html>
