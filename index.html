@@ -34,6 +34,36 @@
         maxZoom: 19,
     }).addTo(map);
 
+    // Parse the URL query string to get the initial set of H3 cells
+    const urlParams = new URLSearchParams(window.location.search);
+    const h3cells = urlParams.get('cells');
+    if (h3cells) {
+        const cells = h3cells.split(',');
+        cells.forEach(cell => {
+            const h3Polygon = h3.cellToBoundary(cell, false);
+            const h3Layer = L.polygon(h3Polygon, { color: 'red' });
+            h3Layer.on('click', function() {
+                L.popup()
+                    .setLatLng(h3Layer.getBounds().getCenter())
+                    .setContent(`H3 Index Hex: <code>${cell}</code><br/>Decimal: <code>${BigInt('0x' + cell).toString()}</code>`)
+                    .openOn(map);
+            });
+            h3Layers.push(h3Layer);
+            h3Layer.addTo(map);
+
+        });
+        // Zoom to the bounds of the H3 cells
+        const bounds = h3Layers.reduce((acc, layer) => acc.extend(layer.getBounds()), L.latLngBounds(h3Layers[0].getBounds().getNorthEast(), h3Layers[0].getBounds().getSouthWest()));
+        map.fitBounds(bounds);
+    }
+
+    const pin = urlParams.get('pin');
+    if (pin) {
+        const [lat, lng] = pin.split(',');
+        const marker = L.marker([lat, lng]);
+        marker.addTo(map);
+    }
+
     // Enable drawing of polygons
     const drawnItems = new L.FeatureGroup();
     map.addLayer(drawnItems);
